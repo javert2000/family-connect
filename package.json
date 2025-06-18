@@ -1,0 +1,33 @@
+{
+  "name": "family-connect",
+  "version": "1.0.0",
+  "description": "App to keep families connected",
+  "keywords": [
+    "family",
+    "connected",
+    "instant",
+    "message",
+    "database"
+  ],
+  "homepage": "https://github.com/javert2000/family-connect#readme",
+  "bugs": {
+    "url": "https://github.com/javert2000/family-connect/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/javert2000/family-connect.git"
+  },
+  "license": "GPL-3.0-or-later",
+  "author": "Jeromey Mathews",
+  "type": "commonjs",
+  "main": "family.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start:dev": "nodemon family.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "mongoose": "^8.16.0"
+  }
+}
