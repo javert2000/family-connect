@@ -6,10 +6,7 @@ require('dotenv').config();
 
 app.use(express.json());
 
-mongoose.connect(process.env.MONGO_URI  || 'mongodb://localhost:27017/family-connect', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
+mongoose.connect(process.env.MONGO_URI  || 'mongodb://127.0.0.1:27017/family-connect')
 .then(() => console.log('Connected to MongoDB'))
 .catch((err) => console.error('Error connecting to MongoDB:', err));
 
