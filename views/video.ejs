@@ -1,0 +1,161 @@
+<% layout('partials/boilerplate') %>
+<div class="container py-4">
+  <div class="row justify-content-center">
+    <div class="col-md-8">
+      <div class="card bg-dark text-light shadow">
+        <div class="card-header bg-secondary text-white">Video Conference</div>
+        <div class="card-body">
+          <div id="room-join-section">
+            <form id="room-form" class="d-flex gap-2 mb-3">
+              <input id="room-input" class="form-control" placeholder="Enter room name..." required />
+              <button class="btn btn-primary" type="submit">Join Room</button>
+            </form>
+          </div>
+          <div id="video-section" style="display:none;">
+            <div class="mb-2"><span class="fw-bold">Room:</span> <span id="room-name"></span></div>
+            <div class="d-flex flex-wrap gap-2" id="video-grid"></div>
+            <div class="mt-3">
+              <button id="leave-btn" class="btn btn-danger">Leave Room</button>
+              <button id="mute-btn" class="btn btn-secondary ms-2">Mute</button>
+              <button id="camera-btn" class="btn btn-secondary ms-2">Camera Off</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
+<script>
+// UI Elements
+const roomForm = document.getElementById('room-form');
+const roomInput = document.getElementById('room-input');
+const roomJoinSection = document.getElementById('room-join-section');
+const videoSection = document.getElementById('video-section');
+const roomNameSpan = document.getElementById('room-name');
+const videoGrid = document.getElementById('video-grid');
+const leaveBtn = document.getElementById('leave-btn');
+const muteBtn = document.getElementById('mute-btn');
+const cameraBtn = document.getElementById('camera-btn');
+
+let localStream = null;
+let currentRoom = null;
+let socket = io();
+let peers = {};
+
+roomForm.onsubmit = async (e) => {
+  e.preventDefault();
+  const room = roomInput.value.trim();
+  if (!room) return;
+  currentRoom = room;
+  roomNameSpan.textContent = room;
+  roomJoinSection.style.display = 'none';
+  videoSection.style.display = '';
+  await startLocalVideo();
+  socket.emit('join-room', room);
+};
+
+leaveBtn.onclick = () => {
+  if (currentRoom) {
+    socket.emit('leave-room', currentRoom);
+    Object.values(peers).forEach(pc => pc.close());
+    peers = {};
+    videoGrid.innerHTML = '';
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+    window.location.reload();
+  }
+};
+
+muteBtn.onclick = () => {
+  if (localStream) {
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.enabled = !audioTrack.enabled;
+      muteBtn.textContent = audioTrack.enabled ? 'Mute' : 'Unmute';
+    }
+  }
+};
+
+cameraBtn.onclick = () => {
+  if (localStream) {
+    const videoTrack = localStream.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      cameraBtn.textContent = videoTrack.enabled ? 'Camera Off' : 'Camera On';
+    }
+  }
+};
+
+async function startLocalVideo() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    addVideoStream(localStream, 'You');
+  } catch (err) {
+    alert('Could not access camera/microphone.');
+  }
+}
+
+function addVideoStream(stream, label) {
+  const videoWrapper = document.createElement('div');
+  videoWrapper.className = 'd-flex flex-column align-items-center';
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = (label === 'You');
+  video.srcObject = stream;
+  video.style.width = '200px';
+  videoWrapper.appendChild(video);
+  const name = document.createElement('div');
+  name.className = 'text-center mt-1 small';
+  name.textContent = label;
+  videoWrapper.appendChild(name);
+  videoGrid.appendChild(videoWrapper);
+}
+
+socket.on('all-users', (users) => {
+  users.forEach(userId => connectToNewUser(userId));
+});
+
+socket.on('user-joined', (userId) => {
+  connectToNewUser(userId, true);
+});
+
+socket.on('signal', async ({ from, data }) => {
+  if (peers[from]) {
+    await peers[from].signal(data);
+  }
+});
+
+socket.on('user-left', (userId) => {
+  if (peers[userId]) {
+    peers[userId].close();
+    delete peers[userId];
+    removeVideo(userId);
+  }
+});
+
+function connectToNewUser(userId, initiator = false) {
+  const peer = new SimplePeer({ initiator, trickle: false, stream: localStream });
+  peers[userId] = peer;
+  peer.on('signal', data => {
+    socket.emit('signal', { to: userId, from: socket.id, data });
+  });
+  peer.on('stream', stream => {
+    addVideoStream(stream, userId);
+  });
+  peer.on('close', () => {
+    removeVideo(userId);
+  });
+}
+
+function removeVideo(label) {
+  const videoWrappers = Array.from(videoGrid.children);
+  videoWrappers.forEach(wrapper => {
+    if (wrapper.dataset.label === label) videoGrid.removeChild(wrapper);
+  });
+}
+</script>

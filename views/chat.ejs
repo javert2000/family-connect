@@ -1,0 +1,510 @@
+<% layout('partials/boilerplate') %>
+<div class="container-fluid py-4">
+  <div class="row" style="height: 75vh;">
+    <!-- Sidebar -->
+    <div class="col-3 col-md-2 bg-dark border-end d-flex flex-column p-0" style="min-width: 180px;">
+      <div class="p-3 border-bottom text-uppercase fw-bold text-secondary">Chats</div>
+      <ul class="nav flex-column" id="chat-list" style="overflow-y: auto; flex: 1 1 auto;"></ul>
+      <div class="p-3 border-bottom text-uppercase fw-bold text-secondary">Users</div>
+      <ul class="list-group list-group-flush" id="user-list" style="overflow-y: auto; flex: 1 1 auto; min-height: 120px;"></ul>
+    </div>
+    <!-- Main Chat Area -->
+    <div class="col bg-dark d-flex flex-column p-0">
+      <div class="card bg-dark text-light shadow h-100 d-flex flex-column">
+        <div class="card-header bg-secondary text-white d-flex align-items-center">
+          <span id="current-chat-name" class="fw-bold"></span>
+        </div>
+        <div class="card-body overflow-auto" id="messages" style="flex: 1 1 auto; max-height: 50vh;"></div>
+        <div class="px-3 py-1" id="typing-indicator" style="min-height: 24px; color: #aaa; font-size: 0.95em;"></div>
+        <div class="card-footer bg-dark">
+          <div class="mb-2 d-flex gap-2">
+            <button type="button" class="btn btn-sm btn-outline-light format-btn" data-format="bold" title="Bold"><b>B</b></button>
+            <button type="button" class="btn btn-sm btn-outline-light format-btn" data-format="italic" title="Italic"><i>I</i></button>
+            <button type="button" class="btn btn-sm btn-outline-light format-btn" data-format="code" title="Inline Code"><code>&lt;/&gt;</code></button>
+            <button type="button" class="btn btn-sm btn-outline-light format-btn" data-format="link" title="Link">🔗</button>
+          </div>
+          <form id="form" autocomplete="off" class="d-flex gap-2">
+            <input id="input" autocomplete="off" placeholder="Type a message..." class="form-control bg-secondary text-light border-0" />
+            <button class="btn btn-primary" type="submit">Send</button>
+          </form>
+          <small class="text-muted">Supports Markdown formatting: <b>**bold**</b>, <i>*italic*</i>, <code>`code`</code>, <u>[link](url)</u>, etc.</small>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- FontAwesome for star and mute icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<audio id="notif-sound" src="https://cdn.pixabay.com/audio/2022/07/26/audio_124bfae5c7.mp3" preload="auto"></audio>
+<script>
+  // Example chats
+  const chatRooms = [
+    { name: 'General', id: 'general' },
+    { name: 'Family', id: 'family' },
+    { name: 'Events', id: 'events' }
+  ];
+  // Placeholder for username (replace with real user from auth later)
+  const username = 'Guest';
+  // Emoji set for reactions
+  const EMOJIS = ['👍', '❤️', '😂', '😮', '🙏'];
+  // Store favorites in localStorage
+  function getFavorites() {
+    return JSON.parse(localStorage.getItem('favoriteChats') || '[]');
+  }
+  function setFavorites(favs) {
+    localStorage.setItem('favoriteChats', JSON.stringify(favs));
+  }
+  // Store unread counts in localStorage
+  function getUnreadCounts() {
+    return JSON.parse(localStorage.getItem('unreadCounts') || '{}');
+  }
+  function setUnreadCounts(counts) {
+    localStorage.setItem('unreadCounts', JSON.stringify(counts));
+  }
+  // Store user order and mute status in localStorage
+  function getUserOrder() {
+    return JSON.parse(localStorage.getItem('userOrder') || '[]');
+  }
+  function setUserOrder(order) {
+    localStorage.setItem('userOrder', JSON.stringify(order));
+  }
+  function getMutedUsers() {
+    return JSON.parse(localStorage.getItem('mutedUsers') || '[]');
+  }
+  function setMutedUsers(muted) {
+    localStorage.setItem('mutedUsers', JSON.stringify(muted));
+  }
+  // UI Elements
+  const chatList = document.getElementById('chat-list');
+  const userList = document.getElementById('user-list');
+  const messagesDiv = document.getElementById('messages');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  const currentChatName = document.getElementById('current-chat-name');
+  const typingIndicator = document.getElementById('typing-indicator');
+  const notifSound = document.getElementById('notif-sound');
+  // State
+  let currentChat = chatRooms[0].id;
+  let allMessages = {};
+  let typingUsers = {};
+  let typingTimeout;
+  let unreadCounts = getUnreadCounts();
+  let users = [];
+  let userOrder = getUserOrder();
+  let mutedUsers = getMutedUsers();
+  const MESSAGES_PER_PAGE = 20;
+  let shownMessages = {};
+  // Helper to format time
+  function formatTime(date) {
+    return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  // Render chat list
+  function renderChatList() {
+    const favs = getFavorites();
+    chatList.innerHTML = '';
+    // Favorites first
+    chatRooms.filter(r => favs.includes(r.id)).forEach(room => {
+      chatList.appendChild(chatListItem(room, true));
+    });
+    // Then non-favorites
+    chatRooms.filter(r => !favs.includes(r.id)).forEach(room => {
+      chatList.appendChild(chatListItem(room, false));
+    });
+  }
+  function chatListItem(room, isFav) {
+    const li = document.createElement('li');
+    li.className = 'nav-item position-relative';
+    const unread = unreadCounts[room.id] || 0;
+    li.innerHTML = `
+      <a href="#" class="nav-link d-flex justify-content-between align-items-center px-3 py-2${currentChat === room.id ? ' active bg-secondary text-white' : ' text-light'}" data-room="${room.id}">
+        <span>${room.name}</span>
+        <span class="d-flex align-items-center">
+          <i class="fa${isFav ? 's' : 'r'} fa-star star-icon me-2" data-room="${room.id}" style="cursor:pointer;"></i>
+          ${unread > 0 ? `<span class='badge bg-danger rounded-pill ms-1'>${unread}</span>` : ''}
+        </span>
+      </a>
+    `;
+    // Click to switch chat
+    li.querySelector('a').onclick = (e) => {
+      e.preventDefault();
+      if (currentChat !== room.id) {
+        currentChat = room.id;
+        unreadCounts[room.id] = 0;
+        setUnreadCounts(unreadCounts);
+        renderChatList();
+        if (!(currentChat in shownMessages)) shownMessages[currentChat] = MESSAGES_PER_PAGE;
+        renderMessages();
+        currentChatName.textContent = room.name;
+        typingIndicator.textContent = '';
+      }
+    };
+    // Click to favorite/unfavorite
+    li.querySelector('.star-icon').onclick = (e) => {
+      e.stopPropagation();
+      const favs = getFavorites();
+      if (isFav) {
+        setFavorites(favs.filter(id => id !== room.id));
+      } else {
+        setFavorites([...favs, room.id]);
+      }
+      renderChatList();
+    };
+    return li;
+  }
+  // Render user list with drag-and-drop and mute/unmute
+  function renderUserList() {
+    // Sort users by userOrder, then by online status, then alphabetically
+    let sorted = [...users];
+    sorted.sort((a, b) => {
+      const orderA = userOrder.indexOf(a.username);
+      const orderB = userOrder.indexOf(b.username);
+      if (orderA !== -1 && orderB !== -1) return orderA - orderB;
+      if (orderA !== -1) return -1;
+      if (orderB !== -1) return 1;
+      if (a.online !== b.online) return b.online - a.online;
+      return a.username.localeCompare(b.username);
+    });
+    userList.innerHTML = '';
+    sorted.forEach((user, idx) => {
+      const li = document.createElement('li');
+      li.className = `list-group-item d-flex align-items-center justify-content-between px-2 py-1 bg-dark text-light${user.online ? '' : ' text-muted'}`;
+      li.setAttribute('draggable', 'true');
+      li.setAttribute('data-username', user.username);
+      if (mutedUsers.includes(user.username) || user.muted) {
+        li.classList.add('opacity-50');
+      }
+      li.innerHTML = `
+        <span class="d-flex align-items-center">
+          <i class="fa fa-circle me-2" style="color:${user.online ? '#4caf50' : '#888'};"></i>
+          <span>${user.username}</span>
+        </span>
+        <span>
+          <i class="fa fa-${mutedUsers.includes(user.username) || user.muted ? 'volume-mute' : 'volume-up'} mute-icon" style="cursor:pointer;" title="${mutedUsers.includes(user.username) || user.muted ? 'Unmute' : 'Mute'}"></i>
+          <i class="fa fa-bars handle ms-2" style="cursor:grab;"></i>
+        </span>
+      `;
+      // Mute/unmute
+      li.querySelector('.mute-icon').onclick = (e) => {
+        e.stopPropagation();
+        if (mutedUsers.includes(user.username) || user.muted) {
+          mutedUsers = mutedUsers.filter(u => u !== user.username);
+          setMutedUsers(mutedUsers);
+          socket.emit('unmute user', user.username);
+        } else {
+          mutedUsers.push(user.username);
+          setMutedUsers(mutedUsers);
+          socket.emit('mute user', user.username);
+        }
+        renderUserList();
+      };
+      // Drag and drop
+      li.ondragstart = (e) => {
+        e.dataTransfer.setData('text/plain', user.username);
+        e.currentTarget.classList.add('dragging');
+      };
+      li.ondragend = (e) => {
+        e.currentTarget.classList.remove('dragging');
+      };
+      li.ondragover = (e) => {
+        e.preventDefault();
+        li.classList.add('bg-secondary');
+      };
+      li.ondragleave = (e) => {
+        li.classList.remove('bg-secondary');
+      };
+      li.ondrop = (e) => {
+        e.preventDefault();
+        li.classList.remove('bg-secondary');
+        const draggedUser = e.dataTransfer.getData('text/plain');
+        const targetUser = user.username;
+        if (draggedUser !== targetUser) {
+          // Reorder userOrder
+          userOrder = userOrder.filter(u => u !== draggedUser);
+          const idx = userOrder.indexOf(targetUser);
+          userOrder.splice(idx, 0, draggedUser);
+          setUserOrder(userOrder);
+          renderUserList();
+        }
+      };
+      userList.appendChild(li);
+    });
+  }
+  // Render messages for current chat with pagination
+  function renderMessages() {
+    messagesDiv.innerHTML = '';
+    const msgs = allMessages[currentChat] || [];
+    if (!(currentChat in shownMessages)) shownMessages[currentChat] = MESSAGES_PER_PAGE;
+    let showCount = shownMessages[currentChat];
+    const startIdx = Math.max(0, msgs.length - showCount);
+    if (msgs.length > showCount) {
+      // Show Load More button
+      const loadMoreBtn = document.createElement('button');
+      loadMoreBtn.className = 'btn btn-outline-secondary btn-sm w-100 mb-2';
+      loadMoreBtn.textContent = 'Load More';
+      loadMoreBtn.onclick = () => {
+        shownMessages[currentChat] += MESSAGES_PER_PAGE;
+        renderMessages();
+      };
+      messagesDiv.appendChild(loadMoreBtn);
+    }
+    msgs.slice(startIdx).forEach(renderMessage);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  }
+  // Render a message bubble with reactions, edit, and delete
+  function renderMessage(msgObj) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mb-2 d-flex flex-column';
+    let editDeleteHtml = '';
+    if (msgObj.username === username) {
+      editDeleteHtml = `
+        <span class="ms-auto d-flex align-items-center gap-2">
+          <i class="fa fa-pencil-alt edit-msg" style="cursor:pointer;" title="Edit"></i>
+          <i class="fa fa-trash delete-msg text-danger" style="cursor:pointer;" title="Delete"></i>
+        </span>
+      `;
+    }
+    // Parse and sanitize Markdown
+    const rawHtml = window.marked.parse(msgObj.text || '');
+    const safeHtml = window.DOMPurify.sanitize(rawHtml);
+    wrapper.innerHTML = `
+      <div class="d-flex align-items-center mb-1">
+        <span class="fw-bold me-2 text-info">${msgObj.username}</span>
+        <span class="text-muted small">${formatTime(msgObj.time)}</span>
+        ${msgObj.edited ? '<span class="text-warning small ms-2">(edited)</span>' : ''}
+        ${editDeleteHtml}
+      </div>
+      <div class="p-2 rounded bg-secondary text-light msg-text">${safeHtml}</div>
+      <div class="mt-1 d-flex gap-2 align-items-center flex-wrap">${renderReactions(msgObj)}</div>
+    `;
+    // Add reaction button listeners
+    EMOJIS.forEach(emoji => {
+      const btn = wrapper.querySelector(`.react-btn[data-emoji='${emoji}']`);
+      if (btn) {
+        btn.onclick = () => {
+          if (msgObj.id) {
+            socket.emit('reaction', { messageId: msgObj.id, emoji, username });
+          }
+        };
+      }
+    });
+    // Edit message
+    const editBtn = wrapper.querySelector('.edit-msg');
+    if (editBtn) {
+      editBtn.onclick = () => {
+        const msgTextDiv = wrapper.querySelector('.msg-text');
+        const originalText = msgObj.text;
+        msgTextDiv.innerHTML = `<input type='text' class='form-control form-control-sm edit-input' value="${originalText.replace(/"/g, '&quot;')}"> <button class='btn btn-sm btn-success save-edit ms-2'>Save</button> <button class='btn btn-sm btn-secondary cancel-edit ms-1'>Cancel</button>`;
+        const inputEl = msgTextDiv.querySelector('.edit-input');
+        inputEl.focus();
+        msgTextDiv.querySelector('.save-edit').onclick = () => {
+          const newText = inputEl.value.trim();
+          if (newText && newText !== originalText) {
+            socket.emit('edit message', { messageId: msgObj.id, newText, username });
+          } else {
+            renderMessages();
+          }
+        };
+        msgTextDiv.querySelector('.cancel-edit').onclick = () => {
+          renderMessages();
+        };
+      };
+    }
+    // Delete message
+    const deleteBtn = wrapper.querySelector('.delete-msg');
+    if (deleteBtn) {
+      deleteBtn.onclick = () => {
+        if (confirm('Delete this message?')) {
+          socket.emit('delete message', { messageId: msgObj.id, username });
+        }
+      };
+    }
+    messagesDiv.appendChild(wrapper);
+  }
+  // Render reactions for a message
+  function renderReactions(msgObj) {
+    let html = '';
+    EMOJIS.forEach(emoji => {
+      const users = (msgObj.reactions && msgObj.reactions[emoji]) || [];
+      const reacted = users.includes(username);
+      html += `<button type="button" class="btn btn-sm react-btn${reacted ? ' btn-primary' : ' btn-outline-secondary'}" data-emoji="${emoji}">${emoji} <span class="badge bg-light text-dark ms-1">${users.length > 0 ? users.length : ''}</span></button>`;
+    });
+    return html;
+  }
+  // Socket.IO
+  const socket = io();
+  // On connect, join as user
+  socket.emit('user join', username);
+  // Listen for user list updates
+  socket.on('user list', function(userArr) {
+    users = userArr;
+    renderUserList();
+  });
+  // Load chat history
+  socket.on('chat history', function(msgs) {
+    // msgs: [{ room, username, text, time, id, reactions }]
+    allMessages = {};
+    msgs.forEach(msg => {
+      if (!allMessages[msg.room]) allMessages[msg.room] = [];
+      allMessages[msg.room].push(msg);
+    });
+    shownMessages = {};
+    renderMessages();
+  });
+  // Listen for new messages
+  socket.on('chat message', function(msgObj) {
+    if (!allMessages[msgObj.room]) allMessages[msgObj.room] = [];
+    allMessages[msgObj.room].push(msgObj);
+    if (msgObj.room === currentChat) {
+      shownMessages[currentChat] = Math.max(shownMessages[currentChat] || MESSAGES_PER_PAGE, (allMessages[currentChat] || []).length);
+      renderMessage(msgObj);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } else {
+      unreadCounts[msgObj.room] = (unreadCounts[msgObj.room] || 0) + 1;
+      setUnreadCounts(unreadCounts);
+      renderChatList();
+      // Play sound and highlight chat
+      if (notifSound) {
+        notifSound.currentTime = 0;
+        notifSound.play();
+      }
+      // Add a visual flash to the chat list item
+      const chatItem = document.querySelector(`a[data-room='${msgObj.room}']`);
+      if (chatItem) {
+        chatItem.classList.add('bg-warning', 'text-dark');
+        setTimeout(() => {
+          chatItem.classList.remove('bg-warning', 'text-dark');
+        }, 800);
+      }
+    }
+  });
+  // Listen for reaction updates
+  socket.on('reaction update', function({ messageId, reactions }) {
+    // Update the message's reactions and re-render messages if in current chat
+    Object.values(allMessages).forEach(msgArr => {
+      const msg = msgArr.find(m => m.id === messageId);
+      if (msg) {
+        msg.reactions = reactions;
+      }
+    });
+    renderMessages();
+  });
+  // Listen for edit/delete events
+  socket.on('edit message', function({ messageId, newText }) {
+    Object.values(allMessages).forEach(msgArr => {
+      const msg = msgArr.find(m => m.id === messageId);
+      if (msg) {
+        msg.text = newText;
+        msg.edited = true;
+      }
+    });
+    renderMessages();
+  });
+  socket.on('delete message', function({ messageId }) {
+    Object.values(allMessages).forEach(msgArr => {
+      const idx = msgArr.findIndex(m => m.id === messageId);
+      if (idx !== -1) msgArr.splice(idx, 1);
+    });
+    renderMessages();
+  });
+  // Typing indicator logic
+  socket.on('typing', function({ room, username: user }) {
+    if (room === currentChat && user !== username) {
+      typingUsers[user] = true;
+      updateTypingIndicator();
+    }
+  });
+  socket.on('stop typing', function({ room, username: user }) {
+    if (room === currentChat && user !== username) {
+      delete typingUsers[user];
+      updateTypingIndicator();
+    }
+  });
+  function updateTypingIndicator() {
+    const users = Object.keys(typingUsers);
+    if (users.length === 0) {
+      typingIndicator.textContent = '';
+    } else if (users.length === 1) {
+      typingIndicator.textContent = `${users[0]} is typing...`;
+    } else {
+      typingIndicator.textContent = `${users.join(', ')} are typing...`;
+    }
+  }
+  // Emit typing events
+  let typing = false;
+  let lastTypingTime;
+  input.addEventListener('input', function() {
+    if (!typing) {
+      typing = true;
+      socket.emit('typing', { room: currentChat, username });
+    }
+    lastTypingTime = Date.now();
+    if (typingTimeout) clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
+      const timeDiff = Date.now() - lastTypingTime;
+      if (timeDiff >= 500) {
+        typing = false;
+        socket.emit('stop typing', { room: currentChat, username });
+      }
+    }, 600);
+  });
+  // Stop typing on send
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    if (input.value) {
+      const msgObj = {
+        room: currentChat,
+        username: username,
+        text: input.value,
+        time: Date.now()
+      };
+      socket.emit('chat message', msgObj);
+      input.value = '';
+      if (typing) {
+        typing = false;
+        socket.emit('stop typing', { room: currentChat, username });
+      }
+    }
+  });
+  // Formatting button logic
+  Array.from(document.querySelectorAll('.format-btn')).forEach(btn => {
+    btn.onclick = function() {
+      const format = btn.getAttribute('data-format');
+      const inputEl = document.getElementById('input');
+      const start = inputEl.selectionStart;
+      const end = inputEl.selectionEnd;
+      let value = inputEl.value;
+      let before = value.substring(0, start);
+      let selected = value.substring(start, end);
+      let after = value.substring(end);
+      let insert, cursorOffset = 0;
+      if (format === 'bold') {
+        insert = `**${selected || 'bold'}**`;
+        cursorOffset = selected ? 0 : 2;
+      } else if (format === 'italic') {
+        insert = `*${selected || 'italic'}*`;
+        cursorOffset = selected ? 0 : 1;
+      } else if (format === 'code') {
+        insert = `\`${selected || 'code'}\``;
+        cursorOffset = selected ? 0 : 1;
+      } else if (format === 'link') {
+        insert = `[${selected || 'text'}](url)`;
+        cursorOffset = selected ? 0 : 6;
+      }
+      inputEl.value = before + insert + after;
+      // Set cursor position
+      if (!selected) {
+        let pos = before.length + insert.length - cursorOffset;
+        inputEl.setSelectionRange(pos, pos - cursorOffset);
+      } else {
+        inputEl.setSelectionRange(before.length, before.length + insert.length);
+      }
+      inputEl.focus();
+    };
+  });
+  // Initial render
+  renderChatList();
+  currentChatName.textContent = chatRooms.find(r => r.id === currentChat).name;
+</script>
