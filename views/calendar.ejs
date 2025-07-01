@@ -1,0 +1,218 @@
+<% layout('partials/boilerplate') %>
+<link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css' rel='stylesheet' />
+<link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/bootstrap5.global.min.css' rel='stylesheet' />
+<style>
+  #calendar {
+    max-width: 900px;
+    margin: 0 auto;
+    background: #222;
+    border-radius: 8px;
+    padding: 10px;
+  }
+  .fc {
+    background: #222;
+    color: #fff;
+    border-radius: 8px;
+  }
+  .fc-toolbar-title {
+    font-size: 1.3rem;
+  }
+  .fc-button-primary {
+    background: #0d6efd;
+    border: none;
+  }
+  .fc-daygrid-day.fc-day-today {
+    background: #0d6efd22;
+  }
+  .floating-add-btn {
+    position: fixed;
+    bottom: 32px;
+    right: 32px;
+    z-index: 1000;
+    border-radius: 50%;
+    width: 56px;
+    height: 56px;
+    font-size: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  @media (max-width: 600px) {
+    #calendar { max-width: 100vw; padding: 2px; }
+    .floating-add-btn { bottom: 16px; right: 16px; width: 48px; height: 48px; font-size: 1.5rem; }
+  }
+</style>
+<div class="container py-4">
+  <div class="row justify-content-center">
+    <div class="col-12">
+      <div id='calendar'></div>
+    </div>
+  </div>
+</div>
+<!-- Floating Add Event Button -->
+<button class="btn btn-primary shadow floating-add-btn" id="addEventBtn" title="Add Event">+</button>
+<!-- Add/Edit Event Modal -->
+<div class="modal fade" id="eventModal" tabindex="-1" aria-labelledby="eventModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content bg-dark text-light">
+      <div class="modal-header">
+        <h5 class="modal-title" id="eventModalLabel">Add/Edit Event</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <form id="eventForm">
+          <input type="hidden" id="eventId" />
+          <div class="mb-3">
+            <label for="eventTitle" class="form-label">Title</label>
+            <input type="text" class="form-control" id="eventTitle" required />
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label for="eventDate" class="form-label">Date</label>
+              <input type="date" class="form-control" id="eventDate" required />
+            </div>
+            <div class="col-3">
+              <label for="eventStartTime" class="form-label">Start</label>
+              <input type="time" class="form-control" id="eventStartTime" required />
+            </div>
+            <div class="col-3">
+              <label for="eventEndTime" class="form-label">End</label>
+              <input type="time" class="form-control" id="eventEndTime" />
+            </div>
+          </div>
+          <div class="mb-3">
+            <label for="eventDesc" class="form-label">Description</label>
+            <textarea class="form-control" id="eventDesc" rows="2"></textarea>
+          </div>
+          <div class="d-flex justify-content-between">
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" class="btn btn-danger d-none" id="deleteEventBtn">Delete</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+<script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js'></script>
+<script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/bootstrap5.global.min.js'></script>
+<script>
+let calendar;
+let selectedDate = null;
+let events = [];
+const currentUser = 'You';
+let editingEventId = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+  const calendarEl = document.getElementById('calendar');
+  calendar = new FullCalendar.Calendar(calendarEl, {
+    themeSystem: 'bootstrap5',
+    initialView: 'dayGridMonth',
+    headerToolbar: {
+      left: 'prev,next today',
+      center: 'title',
+      right: 'dayGridMonth,timeGridWeek,timeGridDay'
+    },
+    height: 'auto',
+    selectable: true,
+    editable: false,
+    events: events,
+    dateClick: function(info) {
+      // Switch to day view for the clicked date
+      calendar.changeView('timeGridDay', info.dateStr);
+    },
+    eventClick: function(info) {
+      // Only allow editing/deleting if creator is current user
+      const event = info.event;
+      if (event.extendedProps.creator === currentUser) {
+        showEventModal(event.startStr, event);
+      } else {
+        // Optionally show details in a read-only modal
+        alert(`Event: ${event.title}\n${event.extendedProps.description || ''}`);
+      }
+    },
+  });
+  calendar.render();
+
+  // Floating Add Event Button
+  document.getElementById('addEventBtn').onclick = function() {
+    selectedDate = null;
+    showEventModal();
+  };
+
+  // Modal form submit
+  document.getElementById('eventForm').onsubmit = function(e) {
+    e.preventDefault();
+    const title = document.getElementById('eventTitle').value.trim();
+    const date = document.getElementById('eventDate').value;
+    const startTime = document.getElementById('eventStartTime').value;
+    const endTime = document.getElementById('eventEndTime').value;
+    const desc = document.getElementById('eventDesc').value.trim();
+    if (!title || !date || !startTime) return;
+    const start = date + 'T' + startTime;
+    const end = endTime ? (date + 'T' + endTime) : undefined;
+    if (editingEventId) {
+      // Edit existing event
+      const idx = events.findIndex(ev => ev.id === editingEventId);
+      if (idx !== -1) {
+        events[idx] = { ...events[idx], title, start, end, description: desc };
+        const calEvent = calendar.getEventById(editingEventId);
+        if (calEvent) {
+          calEvent.setProp('title', title);
+          calEvent.setStart(start);
+          if (end) calEvent.setEnd(end);
+          calEvent.setExtendedProp('description', desc);
+        }
+      }
+    } else {
+      // Add new event
+      const id = 'ev_' + Date.now() + '_' + Math.floor(Math.random()*10000);
+      const newEvent = { id, title, start, end, description: desc, creator: currentUser };
+      events.push(newEvent);
+      calendar.addEvent(newEvent);
+    }
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('eventModal')).hide();
+    document.getElementById('eventForm').reset();
+    editingEventId = null;
+    document.getElementById('deleteEventBtn').classList.add('d-none');
+  };
+
+  // Delete event
+  document.getElementById('deleteEventBtn').onclick = function() {
+    if (editingEventId) {
+      const idx = events.findIndex(ev => ev.id === editingEventId);
+      if (idx !== -1) events.splice(idx, 1);
+      const calEvent = calendar.getEventById(editingEventId);
+      if (calEvent) calEvent.remove();
+      bootstrap.Modal.getOrCreateInstance(document.getElementById('eventModal')).hide();
+      document.getElementById('eventForm').reset();
+      editingEventId = null;
+      document.getElementById('deleteEventBtn').classList.add('d-none');
+    }
+  };
+});
+
+function showEventModal(date, event) {
+  document.getElementById('eventForm').reset();
+  editingEventId = null;
+  document.getElementById('deleteEventBtn').classList.add('d-none');
+  if (event) {
+    // Editing
+    editingEventId = event.id;
+    document.getElementById('eventTitle').value = event.title;
+    const start = event.start;
+    if (start) {
+      document.getElementById('eventDate').value = start.toISOString().slice(0,10);
+      document.getElementById('eventStartTime').value = start.toISOString().slice(11,16);
+    }
+    const end = event.end;
+    if (end) document.getElementById('eventEndTime').value = end.toISOString().slice(11,16);
+    document.getElementById('eventDesc').value = event.extendedProps.description || '';
+    document.getElementById('deleteEventBtn').classList.remove('d-none');
+  } else if (date) {
+    // Adding for a specific date
+    document.getElementById('eventDate').value = date;
+  }
+  const modal = new bootstrap.Modal(document.getElementById('eventModal'));
+  modal.show();
+}
+</script> 
